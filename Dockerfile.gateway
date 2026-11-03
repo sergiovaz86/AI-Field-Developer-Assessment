@@ -1,0 +1,34 @@
+# Gateway image. Task 1 source is intentionally absent.
+# The entrypoint starts as root only long enough to give the named volume at
+# /app/.runtime to the gateway user. The gateway and migration processes then
+# run as that user. The image does not publish a Task 1 listener.
+
+FROM python:3.12-slim-bookworm
+
+COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /bin/uv
+
+WORKDIR /app
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    PATH="/app/.venv/bin:${PATH}"
+
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --no-install-project \
+    && groupadd --system --gid 10001 gateway \
+    && useradd --system --uid 10001 --gid gateway --create-home --home-dir /home/gateway gateway
+
+COPY gateway_service ./gateway_service
+COPY database ./database
+COPY scripts ./scripts
+
+RUN mkdir -p /app/.runtime \
+    && chown gateway:gateway /app/.runtime
+
+EXPOSE 8080
+
+ENTRYPOINT ["python", "scripts/container_entrypoint.py"]
+CMD ["python", "-m", "gateway_service"]

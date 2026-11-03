@@ -1,0 +1,505 @@
+
+# AI Field Developer Assessment — Architecture Rules
+
+## 1. Role and Authority
+
+Act as a Principal AI Systems Engineer and Enterprise Solutions Architect.
+
+Implement the four assessment tasks using the architecture defined in this file.
+
+The assessment requirements and approved architectural decisions are authoritative.
+
+Do not silently change:
+- Programming language or runtime.
+- Transport protocols.
+- Authentication strategy.
+- Token-accounting semantics.
+- Database engine.
+- Service boundaries.
+- Error-envelope contracts.
+- Streaming safety guarantees.
+
+Prefer explicit, deterministic behavior over implicit framework defaults.
+
+Do not introduce unnecessary abstractions, infrastructure, dependencies, or additional services.
+
+## 2. Runtime and Dependencies
+
+- Use Python 3.12 or newer.
+- Use Python for all four tasks.
+- Use Python standard-library asyncio for concurrency.
+- Use native async/await for asynchronous I/O.
+- Use Python type annotations on public interfaces.
+- Use Pydantic v2 for application schema validation.
+- Use the official Python `mcp` SDK for Task 1.
+- Use FastAPI and httpx for the integrated HTTP gateway.
+- Use aiosqlite for SQLite access.
+- Use tiktoken with cl100k_base for estimated token counts.
+- Use pytest and pytest-asyncio for automated tests.
+- Use Ruff for linting and formatting.
+- Pin direct and transitive dependencies through the project lockfile.
+- Do not use Node.js, TypeScript, Express, or npm.
+- Do not use an ORM for the rate-limiter database.
+- Do not introduce Redis, PostgreSQL, Celery, or message brokers.
+
+All external I/O must support deterministic mocking.
+
+## 3. Repository Architecture
+
+Task 1 must be isolated within:
+`task1_mcp_server/`
+
+Tasks 2, 3, and 4 must be implemented inside:
+`gateway_service/`
+
+Gateway-only shared code must live in:
+`gateway_service/shared/`
+
+Task 1 must never import from `gateway_service`.
+
+Task-specific modules must not reach into another task's private implementation.
+
+Cross-task integration must use documented public interfaces.
+
+Provider adapters must remain separate from routing and guardrail logic.
+
+Keep tests grouped by task in `tests/`, with cross-service tests in `tests/integration/`.
+
+Do not relocate modules without an explicit architectural decision.
+
+## 4. Task 1 — MCP Server
+
+Use the official Python MCP SDK and its supported protocol negotiation.
+
+The server must be independently executable using:
+`python -m task1_mcp_server`
+
+Use the SDK's stdio transport.
+
+### Absolute stdio isolation
+
+STDOUT IS EXCLUSIVELY RESERVED FOR MCP TRANSPORT MESSAGES.
+
+Never write application logs, debug output, banners, progress indicators, tracebacks, or diagnostic text to stdout.
+
+Never use `print()` for Task 1 diagnostics.
+
+Never configure logging.StreamHandler to use stdout.
+
+Direct all diagnostic logging to stderr.
+
+Configure logging explicitly rather than relying on implicit defaults.
+
+Never write HTTP response content to the MCP stdio stream.
+
+Do not start an HTTP listener from the Task 1 executable.
+
+Never substitute manual JSON-RPC framing for the official MCP SDK transport.
+
+A failing operation must not corrupt the MCP transport.
+
+Tests must verify that every stdout message obeys the active SDK transport framing.
+
+### Tool contracts
+
+Expose exactly these two assessment tools:
+
+1. `get_customer_record`
+2. `trigger_refund`
+
+For `get_customer_record`:
+- Require customer_id as a string.
+- Match the exact format CUST-XXXXX.
+- Interpret XXXXX as exactly five ASCII digits.
+- Reject missing, extra, or incorrectly typed fields.
+
+For `trigger_refund`:
+- Require customer_id with the same format.
+- Require amount as a finite, strictly positive number.
+- Reject booleans, NaN, and infinity.
+- Require reason as a string of at least 10 characters.
+- Reject unknown input fields.
+
+Use strict Pydantic models with `extra="forbid"`.
+
+Do not allow silent coercion of field types.
+
+Use deterministic in-memory customer fixtures.
+
+Avoid external databases, network services, or provider credentials.
+
+### Error handling
+
+Distinguish protocol-level JSON-RPC errors from tool execution errors.
+
+For the assessment's structural input validation requirement, return:
+`-32602` — Invalid Params.
+
+Do not expose raw Python exception messages or stack traces.
+
+Preserve official MCP protocol behavior unless an explicit assessment compatibility boundary is required.
+
+Document any compatibility-specific SDK exception mapping.
+
+## 5. Task 2 — MCP Security Gateway
+
+Implement Task 2 within the integrated FastAPI gateway.
+
+Use httpx.AsyncClient for downstream HTTP requests.
+
+Use a simplified HTTP POST JSON-RPC endpoint for the mock downstream MCP server.
+
+Do not connect this proxy directly to Task 1's stdio transport.
+
+### Authentication
+
+Use deterministic static Bearer-token-to-role mapping.
+
+Supported example credentials:
+- `admin-token` maps to `admin`.
+- `viewer-token` maps to `viewer`.
+
+Do not treat an unrecognized token as an authenticated viewer.
+
+Do not log raw Bearer credentials.
+
+Never derive authorization from untrusted request-body fields.
+
+### Authorization
+
+For `tools/list`:
+- Forward authenticated requests transparently.
+- Preserve downstream JSON-RPC results and errors.
+
+For `tools/call`:
+- Read the exact `params.name` field.
+- If the tool name starts with `admin_`, require the admin role.
+- Otherwise permit the operation for authenticated roles.
+
+For denied tool calls return JSON-RPC error code:
+`-32001`
+
+Use the assessment error message:
+`Unauthorized Tool Call`
+
+Do not forward denied calls downstream.
+
+Preserve the original JSON-RPC request ID where applicable.
+
+### Zero-trust JSON-RPC parsing
+
+Validate incoming JSON before authorization or forwarding.
+
+Reject malformed JSON and invalid JSON-RPC envelope structures.
+
+Validate the `jsonrpc`, `method`, `params`, and `id` fields according to the approved wire contract.
+
+Do not treat booleans as numeric JSON-RPC IDs.
+
+Do not assume every JSON-RPC request has an ID.
+
+Distinguish notifications from normal requests.
+
+Handle batch requests independently per operation.
+
+Never authorize a batch as one indivisible unit.
+
+A denied operation must not prevent independent authorization of other batch elements.
+
+Do not emit a JSON-RPC response for a valid notification.
+
+Do not silently convert malformed requests into valid requests.
+
+Do not forward untrusted inbound authentication headers to downstream providers unless explicitly required.
+
+## 6. Task 3 — Streaming LLM Guardrails
+
+Implement an OpenAI-compatible Chat Completions endpoint.
+
+Use Server-Sent Events for streaming responses.
+
+Support a deterministic mock provider by default.
+
+Support a separately configured OpenAI-compatible real provider.
+
+Never require external network access for tests.
+
+### SSE parsing
+
+Parse complete SSE frames before interpreting event payloads.
+
+Treat HTTP transport chunks as arbitrary byte boundaries.
+
+Do not assume:
+- One HTTP chunk equals one SSE event.
+- One SSE event equals one token.
+- One UTF-8 byte sequence fits within one network chunk.
+- One sensitive value fits within one content delta.
+
+Preserve SSE framing and event ordering.
+
+Modify only generated text content values requiring redaction.
+
+Preserve unrelated metadata and event fields.
+
+Never parse untrusted SSE data using eval or dynamic code execution.
+
+### PII guardrails
+
+Detect and redact:
+- Email addresses.
+- US Social Security numbers.
+- Luhn-valid credit card numbers.
+
+Replace detected sensitive spans with:
+`[REDACTED]`
+
+Use bounded streaming state.
+
+Support PII spanning multiple incoming deltas.
+
+Never buffer the entire completion.
+
+Use a bounded look-behind and single-chunk lookahead strategy.
+
+Do not release characters that could still belong to a supported sensitive pattern.
+
+The look-behind capacity must be justified against the detector's maximum supported match length.
+
+Do not claim complete protection from arbitrarily long matches with a finite buffer.
+
+Define deterministic maximum matching lengths, delimiter rules, and overflow behavior in the wire contract.
+
+Preserve UTF-8 correctness.
+
+Do not emit partial JSON or malformed SSE events.
+
+Minimize time to first safe output.
+
+### Streaming failure boundaries
+
+Differentiate upstream transport reception from downstream emission.
+
+Provider failover is permitted only before the first downstream response byte is emitted.
+
+Never merge two provider streams after downstream output has started.
+
+Do not expose partial raw upstream stack traces or private diagnostics.
+
+## 7. Task 4 — Model Router and Token Rate Limiter
+
+Use aiosqlite and on-disk SQLite.
+
+Default database path:
+`.runtime/gateway.db`
+
+Use WAL mode and enable a busy timeout.
+
+Do not assume WAL removes SQLite's single-writer constraint.
+
+Each worker must use safe, independently managed database connections.
+
+Never share one mutable connection concurrently without explicit coordination.
+
+### Rolling rate limit
+
+Enforce a true rolling 60-second window.
+
+Default quota:
+50,000 tokens per tenant per rolling 60 seconds.
+
+The tenant identity must come from authenticated server-side context.
+
+Never trust a tenant identifier supplied in an unverified request body.
+
+Use integer Unix timestamps in milliseconds.
+
+Use database transactions for quota checks and reservations.
+
+Use BEGIN IMMEDIATE when performing read-check-write admission.
+
+Do not split quota checks and reservations into separate transactions.
+
+Do not use process-local locks as the only concurrency guarantee.
+
+### Token accounting
+
+Use tiktoken cl100k_base for initial estimates.
+
+Count input and output token budgets together.
+
+Reserve the estimated input tokens plus the worst-case configured output budget before contacting the provider.
+
+Require a finite maximum output-token budget.
+
+Reconcile token reservations with provider-reported usage when available.
+
+Do not charge failed or rejected requests after confirmed teardown.
+
+Retain timed-out request reservations until connection teardown is confirmed.
+
+Never allow reconciliation to produce negative charges.
+
+Never double charge a primary attempt and its backup attempt for the same logical request.
+
+Account for any known provider usage without silently discarding usage reports.
+
+Keep request admission, upstream cost accounting, and quota reconciliation conceptually separate.
+
+Do not evict active reservations merely because their initial timestamp is older than 60 seconds.
+
+Document the distinction between rolling admission windows and active in-flight reservations.
+
+### Failover
+
+Use a primary and a backup provider.
+
+Fail over on:
+- HTTP 429.
+- HTTP 5xx.
+- Network failure.
+- First-byte timeout after 3000 milliseconds.
+
+Allow exactly one backup attempt.
+
+Apply a separate 3000-millisecond first-byte deadline to the backup.
+
+Do not retry indefinitely.
+
+Do not retry non-idempotent operations unless the operation's retry behavior is explicitly safe.
+
+Do not replay downstream output after bytes have been emitted.
+
+Keep provider-specific adapters separate from failover policy.
+
+### Error responses
+
+Return OpenAI-compatible error envelopes.
+
+Include a correlation/request ID.
+
+Map internal errors to stable public error codes and messages.
+
+Never expose:
+- Internal stack traces.
+- Database paths.
+- Provider credentials.
+- Raw SQL statements.
+- Internal hostnames.
+- Private upstream response bodies.
+
+## 8. Database Integrity
+
+Use explicit SQL migrations.
+
+Do not create or modify the schema implicitly during normal request processing.
+
+Use foreign keys where applicable.
+
+Store tenant identity as a stable non-secret hash or internal identifier.
+
+Never store raw tenant API keys.
+
+Use integer token counts.
+
+Use integer millisecond timestamps.
+
+Use CHECK constraints for invariant fields.
+
+Use UNIQUE constraints for logical request idempotency.
+
+Create indexes that support tenant-scoped rolling-window queries.
+
+Do not use floating-point timestamps or floating-point token counts.
+
+Database migrations must be versioned, reviewable, and reproducible.
+
+Do not run migrations concurrently from multiple gateway workers.
+
+Persist database data using a Docker volume when containerized.
+
+## 9. Security and Parsing
+
+Assume all incoming HTTP headers, JSON bodies, JSON-RPC envelopes, SSE frames, and upstream response fields are untrusted.
+
+Use explicit validation at every external trust boundary.
+
+Prefer Pydantic models with `extra="forbid"` for client-owned request schemas.
+
+Preserve protocol-defined extensibility only where the applicable specification requires it.
+
+Do not use unsafe deserialization.
+
+Do not use eval or exec on untrusted input.
+
+Do not construct SQL statements using untrusted string interpolation.
+
+Always use parameterized SQL queries.
+
+Use configured request size, body size, timeout, and buffer limits.
+
+Sanitize error responses.
+
+Redact credentials and sensitive payloads from logs.
+
+Do not leak sensitive information through debug output.
+
+## 10. Testing and Acceptance
+
+All tests must run offline without real provider credentials.
+
+Use deterministic test fixtures and an injectable clock.
+
+Test protocol-level and application-level failures separately.
+
+Cover malformed JSON, unknown fields, incorrect types, missing fields, and unexpected nulls.
+
+Cover JSON-RPC notifications and mixed-authority batches.
+
+Cover stdio isolation and subprocess lifecycle behavior.
+
+Cover SSE boundaries, UTF-8 splits, and cross-chunk PII.
+
+Cover Luhn-positive and Luhn-negative cases.
+
+Cover atomic concurrent quota reservations.
+
+Cover rolling-window expiration at millisecond boundaries.
+
+Cover process-restart persistence.
+
+Cover 429, 5xx, network failure, and first-byte timeout.
+
+Cover provider failover before and after downstream emission.
+
+Cover sanitized gateway errors.
+
+Keep assessment-minimum tests distinct from production-hardening tests.
+
+Avoid flaky tests based on arbitrary sleeps.
+
+## 11. Implementation Discipline
+
+Do not implement application business logic before the relevant contract is established.
+
+Do not invent unstated external API behavior.
+
+Do not silently change assessment-specific JSON-RPC error mappings.
+
+Do not mix transport parsing, authorization, routing, and persistence into one function.
+
+Prefer small, testable modules with explicit interfaces.
+
+Use structured stderr/application logging where appropriate.
+
+Respect cancellation and resource cleanup.
+
+Keep all secrets in environment-based configuration.
+
+Do not commit `.env`, API credentials, runtime databases, or WAL files.
+
+Maintain clear documentation of intentional assessment compatibility choices.
+
+When a requirement conflicts with protocol correctness, document the distinction and use an explicit compatibility boundary.
+
+Do not introduce features outside the four assessment tasks without an approved architectural reason.

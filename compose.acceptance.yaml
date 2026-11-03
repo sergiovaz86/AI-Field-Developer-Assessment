@@ -1,0 +1,70 @@
+# Opt-in acceptance overlay. It is not loaded by `docker compose up`.
+# Run it with an explicit project name so it does not replace the production
+# stack:
+#
+#   docker compose -p acceptance -f compose.yaml -f compose.acceptance.yaml up --build
+#
+# GATEWAY_MODE stays production. A tenant bearer is required. The primary and
+# backup URLs are Compose DNS names for the deterministic mocks below, not the
+# operator's provider placeholders.
+
+services:
+  llm-primary:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    working_dir: /app
+    command: ["python", "-m", "gateway_service.mocks.llm_http"]
+    environment:
+      LLM_MOCK_ROLE: primary
+      LLM_MOCK_HOST: 0.0.0.0
+      LLM_MOCK_PORT: "9100"
+    healthcheck:
+      test: ["CMD", "python", "scripts/probe_http.py", "http://127.0.0.1:9100/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: "no"
+
+  llm-backup:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    working_dir: /app
+    command: ["python", "-m", "gateway_service.mocks.llm_http"]
+    environment:
+      LLM_MOCK_ROLE: backup
+      LLM_MOCK_HOST: 0.0.0.0
+      LLM_MOCK_PORT: "9100"
+    healthcheck:
+      test: ["CMD", "python", "scripts/probe_http.py", "http://127.0.0.1:9100/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: "no"
+
+  gateway:
+    environment:
+      GATEWAY_MODE: production
+      GATEWAY_LLM_UPSTREAM: openai
+      GATEWAY_TENANT_TOKENS: acceptance=acceptance-token-value
+      GATEWAY_PRIMARY_PROVIDER_BASE_URL: http://llm-primary:9100
+      GATEWAY_BACKUP_PROVIDER_BASE_URL: http://llm-backup:9100
+      GATEWAY_PRIMARY_PROVIDER_API_KEY: acceptance-primary-key
+      GATEWAY_BACKUP_PROVIDER_API_KEY: acceptance-backup-key
+      GATEWAY_DEFAULT_TOKENS_PER_WINDOW: "11"
+      GATEWAY_DEFAULT_MAX_OUTPUT_TOKENS: "4"
+      GATEWAY_MAX_OUTPUT_TOKEN_BUDGET: "8"
+    ports: !override
+      - "8081:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      downstream:
+        condition: service_healthy
+      llm-primary:
+        condition: service_healthy
+      llm-backup:
+        condition: service_healthy

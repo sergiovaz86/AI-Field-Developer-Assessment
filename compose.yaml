@@ -1,0 +1,95 @@
+# Process topology for Tasks 1 through 4.
+# task1 is a stdio process and publishes no ports.
+# The gateway does not attach to task1 stdin or stdout.
+# Apply the schema with the migrate service. Gateway startup does not migrate.
+# The gateway service is production mode. Incomplete credentials, provider
+# URLs, or a missing migrated database make that process exit. They do not
+# select assessment_mock.
+# downstream is an HTTP JSON-RPC mock. The gateway reaches it by Compose DNS.
+# It is not the Task 1 stdio server, and its port is not published.
+
+name: ai-field-assessment
+
+services:
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    working_dir: /app
+    command: ["python", "scripts/init_database.py"]
+    environment:
+      GATEWAY_DATABASE_PATH: .runtime/gateway.db
+    volumes:
+      - gateway-runtime:/app/.runtime
+    restart: "no"
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    working_dir: /app
+    environment:
+      GATEWAY_MODE: production
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_PORT: "8080"
+      GATEWAY_DATABASE_PATH: .runtime/gateway.db
+      GATEWAY_LOG_LEVEL: INFO
+      GATEWAY_LLM_UPSTREAM: openai
+      GATEWAY_TENANT_TOKENS: ${GATEWAY_TENANT_TOKENS:-}
+      GATEWAY_PRIMARY_PROVIDER_BASE_URL: ${GATEWAY_PRIMARY_PROVIDER_BASE_URL:-}
+      GATEWAY_BACKUP_PROVIDER_BASE_URL: ${GATEWAY_BACKUP_PROVIDER_BASE_URL:-}
+      GATEWAY_PRIMARY_PROVIDER_API_KEY: ${GATEWAY_PRIMARY_PROVIDER_API_KEY:-}
+      GATEWAY_BACKUP_PROVIDER_API_KEY: ${GATEWAY_BACKUP_PROVIDER_API_KEY:-}
+      GATEWAY_DOWNSTREAM_MCP_URL: http://downstream:9000/mcp
+      GATEWAY_DOWNSTREAM_MCP_ALLOWLIST: http://downstream:9000/mcp
+    ports:
+      - "8080:8080"
+    volumes:
+      - gateway-runtime:/app/.runtime
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      downstream:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: "no"
+
+  downstream:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    working_dir: /app
+    command: ["python", "-m", "gateway_service.mocks.mcp_http"]
+    environment:
+      DOWNSTREAM_HOST: 0.0.0.0
+      DOWNSTREAM_PORT: "9000"
+    healthcheck:
+      test: ["CMD", "python", "scripts/probe_http.py", "http://127.0.0.1:9000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: "no"
+
+  task1:
+    build:
+      context: .
+      dockerfile: Dockerfile.task1
+    working_dir: /app
+    stdin_open: true
+    tty: false
+    restart: "no"
+
+volumes:
+  gateway-runtime:
